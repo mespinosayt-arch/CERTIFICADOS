@@ -74,7 +74,7 @@ const fieldsMeta=[
   {key:'university',label:'Universidad',group:'academic',type:'text',auto:true},
   {key:'program',label:'Programa beca',group:'academic',type:'text',auto:true},
   {key:'country',label:'País',group:'academic',type:'text',auto:true},
-  {key:'resolution',label:'Resolución',group:'academic',type:'text',auto:true},
+  {key:'resolution',label:'Resolución / REX',group:'academic',type:'text',auto:true},
   {key:'certificateNo',label:'N.º certificado',group:'admin',type:'text',auto:false},
   {key:'expediente',label:'N.º expediente / referencia',group:'admin',type:'text',auto:true},
   {key:'issueDate',label:'Fecha del certificado',group:'admin',type:'date',auto:false}
@@ -178,7 +178,49 @@ function extractFields(fullText,filename,geometryPages=[]){
  const geo=extractGeometryFields(geometryPages);
  for(const key of ['university','program','programStart','programEnd','scholarshipStart','scholarshipEnd'])if(geo[key])f[key]=key==='university'||key==='program'?properWords(geo[key]):geo[key];
 const gradeAt=t.search(/OBTENCI[ÓO]N/i);const gradeBlock=gradeAt>=0?t.slice(gradeAt,gradeAt+75):'';m=gradeBlock.match(/(\d{1,2}[\/-]\d{1,2})[^0-9]{0,16}(\d{4})/i);if(m)f.gradeDate=dateToISO(m[1]+'-'+m[2]);else{m=gradeBlock.match(/(\d{1,2}[\/-]\d{1,2}[\/-]\d{4})/i);if(m)f.gradeDate=dateToISO(m[1]);}
- m=t.match(/REX\s+DE\s+FALLO\s*:?[\s.·•-]*(\d{2,5}\s*\/\s*\d{4})/i);if(m)f.resolution='Resolución Exenta de fallo de beca N° '+m[1].replace(/\s+/g,'');
+ // Extraer las resoluciones numeradas desde la sección correspondiente de la bitácora.
+ // Los PDF antiguos pueden intercalar encabezados de página entre la etiqueta y su número;
+ // por eso se identifica la etiqueta de resolución más cercana, no todo el texto anterior.
+ const resolutionBlockStart=table.search(/\bRESOLUCIONES\b/i);
+ if(resolutionBlockStart>=0){
+   let resolutionBlock=table.slice(resolutionBlockStart).replace(/^\s*RESOLUCIONES\b/i,'');
+   resolutionBlock=resolutionBlock.split(/\b(?:OBSERVACIONES|OBLIGACIONES|INFORME\s+DE\s+LA\s+UNIDAD)\b/i)[0];
+   const resolutionLabels=[
+     /REX\s+DE\s+FALLO/ig,
+     /REX\s+DE\s+CONVENIO/ig,
+     /REX\s+EXTENSION/ig,
+     /REX\s+EXT\.?\s+COMPLEMENT(?:ARIOS?)?/ig,
+     /REX\s+CONYUGE\s*\/\s*CONV\.?\s*CIVIL/ig,
+     /REX\s+GASTOS\s+OPERACIONALES/ig,
+     /REX\s+PRE[- ]POSNATAL/ig,
+     /REX\s+HIJOS/ig,
+     /REX\s+SUSPENSION\s+DE\s+BECA\s+CON\s+EXTENSION/ig,
+     /AUSENCIA\s+PAIS\s*\/?\s*TRABAJO\s+CAMPO/ig,
+     /PASAJES/ig,
+     /SUST\.?\s+PREFERENCIA/ig,
+     /REINTEGROS/ig,
+     /CAMBIO\s+DE\s+PROGRAMA/ig,
+     /PASANTIAS/ig,
+     /SUSPENSION\s+RETORNO\s+Y\/O\s+RETRIBUCION/ig,
+     /COTUTELAS/ig,
+     /REX\s+RENOVACION\s*[1-4]/ig,
+     /REX\s+HOMOLOGACION/ig,
+     /REX\s+RENOVACION\s+GASTOS\s+OPERACIONALES/ig,
+     /EXTENSION\s+BENEFICIOS\s+COMPLEMENTARIOS/ig,
+     /FALLO/ig
+   ];
+   const numberPattern=/\d{2,5}\s*\/\s*\d{4}/g;const found=[];let nm;
+   while((nm=numberPattern.exec(resolutionBlock))!==null){
+     const lookback=resolutionBlock.slice(Math.max(0,nm.index-140),nm.index);let best=null;
+     for(const pattern of resolutionLabels){const re=new RegExp(pattern.source,'ig');let lm;while((lm=re.exec(lookback))!==null){const endPos=lm.index+lm[0].length;const candidate={label:cleanVal(lm[0]),end:endPos,length:lm[0].length};if(!best||candidate.end>best.end||(candidate.end===best.end&&candidate.length>best.length))best=candidate;}}
+     if(!best)continue;
+     const label=best.label;const number=nm[0].replace(/\s+/g,'');
+     if(!found.some(x=>x.label.toLocaleUpperCase('es-CL')===label.toLocaleUpperCase('es-CL')&&x.number===number))found.push({label,number});
+   }
+   if(found.length)f.resolution=found.map(x=>`${properWords(x.label)}: ${x.number}`).join('; ');
+ }
+ // Respaldo adicional si el PDF solo contiene el rótulo REX DE FALLO fuera de la tabla.
+ if(!f.resolution){m=t.match(/REX\s+DE\s+FALLO\s*:?([\s.·•-]*)(\d{2,5}\s*\/\s*\d{4})/i);if(m)f.resolution='REX de fallo: '+m[2].replace(/\s+/g,'');}
  m=t.match(/EXPEDIENTE\s*:?[\s.·•-]*([A-Z]?\d{3,7}\s*[\/-]\s*\d{4})/i);if(!m)m=t.match(/\b(E\s*\d{3,7}\s*[\/-]\s*\d{4})\b/i);if(m)f.expediente=m[1].replace(/\s+/g,'');
  const period=scholarshipPeriodLabel(f);if(period&&!f.payments.length)f.payments=[{month:'',year:period,concept:'Sin información',currency:'CLP',amount:'',amountCLP:''}];
  const required=['name','rut','folio','scholarship','university','program'];const missing=required.filter(k=>!f[k]);
@@ -199,7 +241,7 @@ async function readPdf(file){
  else if(result.missing.length){result.notes.push('No se pudieron identificar automáticamente todos los campos esenciales; revisa los campos destacados.');}
  return result;
 }
-function fieldInput(meta,val){const missing=['name','rut','folio','scholarship','university','program','certificateNo'].includes(meta.key)&&!val;const cls='field'+(meta.group==='admin'?'':'')+(missing?' missing':'');const type=meta.type==='date'?'date':'text';let help=meta.auto?'Detectado desde el PDF cuando existe texto legible. Verifica antes de emitir.':'Dato administrativo que se completa manualmente.';if(meta.key==='program')help='En la bitácora este campo aparece como «Nombre programa»; se muestra como «Programa beca» en el certificado.';if(meta.key==='university')help='Se extrae del campo «Universidad» de la bitácora. Verifica el nombre antes de emitir.';return `<div class="${cls}"><label for="field-${meta.key}">${esc(meta.label)} ${meta.auto?'<span class="auto">EXTRACCIÓN</span>':''}</label><input id="field-${meta.key}" data-field="${meta.key}" type="${type}" value="${esc(val||'')}" placeholder="${meta.type==='date'?'Seleccionar fecha':'Completar si no aparece en la bitácora'}" autocomplete="off"><div class="field-help">${help}</div></div>`;}
+function fieldInput(meta,val){const missing=['name','rut','folio','scholarship','university','program','certificateNo'].includes(meta.key)&&!val;const cls='field'+(meta.group==='admin'?'':'')+(missing?' missing':'');const type=meta.type==='date'?'date':'text';let help=meta.auto?'Detectado desde el PDF cuando existe texto legible. Verifica antes de emitir.':'Dato administrativo que se completa manualmente.';if(meta.key==='program')help='En la bitácora este campo aparece como «Nombre programa»; se muestra como «Programa beca» en el certificado.';if(meta.key==='university')help='Se extrae del campo «Universidad» de la bitácora. Verifica el nombre antes de emitir.';if(meta.key==='resolution')help='Se buscan todos los números de resolución/REX en la sección «Resoluciones» de la bitácora. Verifica que los números y conceptos coincidan.';return `<div class="${cls}"><label for="field-${meta.key}">${esc(meta.label)} ${meta.auto?'<span class="auto">EXTRACCIÓN</span>':''}</label><input id="field-${meta.key}" data-field="${meta.key}" type="${type}" value="${esc(val||'')}" placeholder="${meta.type==='date'?'Seleccionar fecha':'Completar si no aparece en la bitácora'}" autocomplete="off"><div class="field-help">${help}</div></div>`;}
 function groupFields(keys,fields){return keys.map(k=>{const meta=fieldsMeta.find(x=>x.key===k);return fieldInput(meta,fields[k]);}).join('');}
 function renderActive(){
  const c=activeCase();if(!c){$('activeTitle').textContent='Carga una bitácora para comenzar';$('activeSub').textContent='Los campos extraídos se podrán revisar y corregir antes de descargar.';$('workContent').innerHTML='<div class="empty-state"><div class="symbol">▤</div><h2>Prepara tu primer certificado</h2><p>La plataforma detecta los datos legibles de la bitácora, permite corregirlos y genera archivos independientes para cada becario/a. Los campos ausentes quedan vacíos para evitar completar información sin respaldo.</p></div>';setActions(false);return;}
@@ -255,7 +297,7 @@ async function buildExcel(c){
    ws.mergeCells(`C${row}:F${row}`);
    const cell=ws.getCell(`C${row}`);const raw=f[key]||'';cell.value=type==='date'?dateObj(raw):raw;styleCell(cell,{size:10,align:'left',wrap:true});
    if(type==='date')cell.numFmt='dd/mm/yyyy';
-   ws.getRow(row).height=(String(raw).length>100?27:21);row++;
+   const estimatedLines=Math.max(1,Math.ceil(String(raw).length/(key==='resolution'?85:100)));ws.getRow(row).height=Math.max(21,estimatedLines*16);row++;
  }
  row+=2;
  const payments=(f.payments||[]).filter(p=>[p.month,p.year,p.concept,p.amount,p.amountCLP].some(x=>String(x||'').trim()));const clp=payments.filter(p=>p.currency!=='USD');const usd=payments.filter(p=>p.currency==='USD');
